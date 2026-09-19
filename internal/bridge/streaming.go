@@ -4,9 +4,12 @@ import "strings"
 
 // Delta is one decoded upstream piece, mirroring Java's BridgeDelta record.
 type Delta struct {
-	Role      string
-	Content   string
-	ToolCalls []any
+	Role             string
+	Content          string
+	ToolCalls        []any
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
 }
 
 // isEmpty reports nil or all-three-empty, mirroring Java BridgeDelta.isEmpty.
@@ -15,6 +18,16 @@ func (d *Delta) isEmpty() bool {
 		return true
 	}
 	return d.Role == "" && d.Content == "" && (d.ToolCalls == nil || len(d.ToolCalls) == 0)
+}
+
+// hasTokens reports if token counts have been extracted
+func (d *Delta) hasTokens() bool {
+	return d != nil && (d.PromptTokens > 0 || d.CompletionTokens > 0 || d.TotalTokens > 0)
+}
+
+// hasContent reports if the delta has meaningful content to emit
+func (d *Delta) hasContent() bool {
+	return d != nil && (d.Role != "" || d.Content != "" || d.ToolCalls != nil && len(d.ToolCalls) > 0)
 }
 
 // ToolCallAccumulator concatenates tool-call argument fragments by index,

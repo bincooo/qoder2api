@@ -100,6 +100,7 @@ func (b *Bridge) Handler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(http.StatusOK)
 		fl, _ := w.(http.Flusher)
+		var lastDelta *Delta
 		acc := newStreamAccumulator(toolsEnabled, func(role, content string, tc []any) {
 			writeSseChunk(w, reqID, created, model, role, content, tc)
 			if fl != nil {
@@ -111,6 +112,10 @@ func (b *Bridge) Handler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			delta := extractDelta(strings.TrimSpace(line[5:]))
+			if delta == nil {
+				return
+			}
+			lastDelta = delta
 			if delta.isEmpty() {
 				return
 			}
@@ -126,6 +131,17 @@ func (b *Bridge) Handler(w http.ResponseWriter, r *http.Request) {
 		choice := chunk["choices"].([]any)[0].(map[string]any)
 		choice["finish_reason"] = acc.FinishReason()
 		choice["delta"] = map[string]any{}
+
+		// Set usage from the last delta if available
+		if lastDelta != nil && (lastDelta.PromptTokens > 0 || lastDelta.CompletionTokens > 0 || lastDelta.TotalTokens > 0) {
+			chunk["usage"] = map[string]any{
+				"prompt_tokens":     lastDelta.PromptTokens,
+				"completion_tokens": lastDelta.CompletionTokens,
+				"total_tokens":      lastDelta.TotalTokens,
+			}
+		} else {
+			chunk["usage"] = map[string]any{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+		}
 		fmt.Fprintf(w, "data: %s\n\n", mustJSON(chunk))
 		fmt.Fprint(w, "data: [DONE]\n\n")
 		return
@@ -134,6 +150,7 @@ func (b *Bridge) Handler(w http.ResponseWriter, r *http.Request) {
 	// non-streaming, mirroring Java lines 132-183.
 	var full strings.Builder
 	acc := &ToolCallAccumulator{}
+	var lastDelta *Delta
 	if err := b.sess.SignedPostStream(context.Background(), chatURL, bodyEncoded, extra, func(line string) {
 		if !strings.HasPrefix(line, "data:") {
 			return
@@ -142,6 +159,7 @@ func (b *Bridge) Handler(w http.ResponseWriter, r *http.Request) {
 		if delta == nil {
 			return
 		}
+		lastDelta = delta
 		if delta.Content != "" {
 			full.WriteString(delta.Content)
 		}
@@ -177,26 +195,118 @@ func (b *Bridge) Handler(w http.ResponseWriter, r *http.Request) {
 		finishReason = "tool_calls"
 	}
 
+	// Build usage from response_meta.usage
+	usage := map[string]any{
+		"prompt_tokens":     0,
+		"completion_tokens": 0,
+		"total_tokens":      0,
+	}
+	if lastDelta != nil && (lastDelta.PromptTokens > 0 || lastDelta.CompletionTokens > 0 || lastDelta.TotalTokens > 0) {
+		usage = map[string]any{
+			"prompt_tokens":     lastDelta.PromptTokens,
+			"completion_tokens": lastDelta.CompletionTokens,
+			"total_tokens":      lastDelta.TotalTokens,
+		}
+	}
+
 	resp := map[string]any{
 		"id":      reqID,
 		"object":  "chat.completion",
 		"created": created,
 		"model":   model,
 		"choices": []any{map[string]any{"index": 0, "message": msg, "finish_reason": finishReason}},
-		"usage":   map[string]any{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+		"usage":   usage,
 	}
 	writeJSON(w, resp)
 }
 
 // extractDelta parses the {body: <json-string>} SSE wrapper then the inner
 // {choices:[{delta:{role,content,tool_calls}}]} shape, mirroring Java.
+// It also extracts response_meta.usage for token counts.
 func extractDelta(dataLine string) *Delta {
-	var wrapper struct {
+	// Try parsing as headers-style response first (HTTP response wrapper)
+	var headersWrapper struct {
 		Body string `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(dataLine), &headersWrapper); err == nil && headersWrapper.Body != "" {
+		// Parse the inner body which may contain usage directly
+		var directUsage struct {
+			Usage struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+				Choices          []struct {
+					Delta struct {
+						Role      string `json:"role"`
+						Content   string `json:"content"`
+						ToolCalls []any  `json:"tool_calls"`
+					} `json:"delta"`
+				} `json:"choices"`
+			} `json:"usage"`
+			Choices []struct {
+				Delta struct {
+					Role      string `json:"role"`
+					Content   string `json:"content"`
+					ToolCalls []any  `json:"tool_calls"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal([]byte(headersWrapper.Body), &directUsage) == nil {
+			promptTokens := directUsage.Usage.PromptTokens
+			completionTokens := directUsage.Usage.CompletionTokens
+			totalTokens := directUsage.Usage.TotalTokens
+
+			// Check if there's actual content in choices
+			for _, ch := range directUsage.Choices {
+				d := ch.Delta
+				if d.Role != "" || d.Content != "" || len(d.ToolCalls) > 0 {
+					return &Delta{
+						Role:             d.Role,
+						Content:          d.Content,
+						ToolCalls:        d.ToolCalls,
+						PromptTokens:     promptTokens,
+						CompletionTokens: completionTokens,
+						TotalTokens:      totalTokens,
+					}
+				}
+			}
+			// Return just the usage if no delta content
+			return &Delta{
+				PromptTokens:     promptTokens,
+				CompletionTokens: completionTokens,
+				TotalTokens:      totalTokens,
+			}
+		}
+	}
+
+	// Fallback to original response_meta format
+	var wrapper struct {
+		Body         string         `json:"body"`
+		ResponseMeta map[string]any `json:"response_meta"`
 	}
 	if json.Unmarshal([]byte(dataLine), &wrapper) != nil || wrapper.Body == "" {
 		return nil
 	}
+
+	// Extract usage from response_meta
+	promptTokens := 0
+	completionTokens := 0
+	totalTokens := 0
+
+	if wrapper.ResponseMeta != nil {
+		if usage, ok := wrapper.ResponseMeta["usage"].(map[string]any); ok {
+			if pt, ok := usage["prompt_tokens"].(float64); ok {
+				promptTokens = int(pt)
+			}
+			if ct, ok := usage["completion_tokens"].(float64); ok {
+				completionTokens = int(ct)
+			}
+			if tt, ok := usage["total_tokens"].(float64); ok {
+				totalTokens = int(tt)
+			}
+		}
+	}
+
 	var inner struct {
 		Choices []struct {
 			Delta struct {
@@ -212,10 +322,21 @@ func extractDelta(dataLine string) *Delta {
 	for _, ch := range inner.Choices {
 		d := ch.Delta
 		if d.Role != "" || d.Content != "" || len(d.ToolCalls) > 0 {
-			return &Delta{Role: d.Role, Content: d.Content, ToolCalls: d.ToolCalls}
+			return &Delta{
+				Role:             d.Role,
+				Content:          d.Content,
+				ToolCalls:        d.ToolCalls,
+				PromptTokens:     promptTokens,
+				CompletionTokens: completionTokens,
+				TotalTokens:      totalTokens,
+			}
 		}
 	}
-	return nil
+	return &Delta{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      totalTokens,
+	}
 }
 
 // makeChunk mirrors Java makeChunk: a shell chunk with an empty delta and
