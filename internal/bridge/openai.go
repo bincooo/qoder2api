@@ -53,7 +53,7 @@ func (b *Bridge) Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body map[string]any
-	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+	if err = json.Unmarshal(bodyBytes, &body); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -107,7 +107,7 @@ func (b *Bridge) Handler(w http.ResponseWriter, r *http.Request) {
 				fl.Flush()
 			}
 		})
-		err := b.sess.SignedPostStream(context.Background(), chatURL, bodyEncoded, extra, func(line string) {
+		err = b.sess.SignedPostStream(context.Background(), chatURL, bodyEncoded, extra, func(line string) {
 			if !strings.HasPrefix(line, "data:") {
 				return
 			}
@@ -134,13 +134,16 @@ func (b *Bridge) Handler(w http.ResponseWriter, r *http.Request) {
 
 		// Set usage from the last delta if available
 		if lastDelta != nil && (lastDelta.PromptTokens > 0 || lastDelta.CompletionTokens > 0 || lastDelta.TotalTokens > 0) {
-			chunk["usage"] = map[string]any{
+			choice["usage"] = map[string]any{
 				"prompt_tokens":     lastDelta.PromptTokens,
 				"completion_tokens": lastDelta.CompletionTokens,
 				"total_tokens":      lastDelta.TotalTokens,
+				"prompt_tokens_details": map[string]any{
+					"cached_tokens": lastDelta.CachedTokens,
+				},
 			}
 		} else {
-			chunk["usage"] = map[string]any{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+			choice["usage"] = map[string]any{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 		}
 		fmt.Fprintf(w, "data: %s\n\n", mustJSON(chunk))
 		fmt.Fprint(w, "data: [DONE]\n\n")
@@ -207,6 +210,11 @@ func (b *Bridge) Handler(w http.ResponseWriter, r *http.Request) {
 			"completion_tokens": lastDelta.CompletionTokens,
 			"total_tokens":      lastDelta.TotalTokens,
 		}
+		if lastDelta.CachedTokens > 0 {
+			usage["prompt_tokens_details"] = map[string]any{
+				"cached_tokens": lastDelta.CachedTokens,
+			}
+		}
 	}
 
 	resp := map[string]any{
@@ -232,10 +240,13 @@ func extractDelta(dataLine string) *Delta {
 		// Parse the inner body which may contain usage directly
 		var directUsage struct {
 			Usage struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
-				TotalTokens      int `json:"total_tokens"`
-				Choices          []struct {
+				PromptTokens        int `json:"prompt_tokens"`
+				CompletionTokens    int `json:"completion_tokens"`
+				TotalTokens         int `json:"total_tokens"`
+				PromptTokensDetails struct {
+					CachedTokens int `json:"cached_tokens"`
+				} `json:"prompt_tokens_details"`
+				Choices []struct {
 					Delta struct {
 						Role      string `json:"role"`
 						Content   string `json:"content"`
@@ -255,6 +266,7 @@ func extractDelta(dataLine string) *Delta {
 			promptTokens := directUsage.Usage.PromptTokens
 			completionTokens := directUsage.Usage.CompletionTokens
 			totalTokens := directUsage.Usage.TotalTokens
+			cachedTokens := directUsage.Usage.PromptTokensDetails.CachedTokens
 
 			// Check if there's actual content in choices
 			for _, ch := range directUsage.Choices {
@@ -267,6 +279,7 @@ func extractDelta(dataLine string) *Delta {
 						PromptTokens:     promptTokens,
 						CompletionTokens: completionTokens,
 						TotalTokens:      totalTokens,
+						CachedTokens:     cachedTokens,
 					}
 				}
 			}
@@ -275,6 +288,7 @@ func extractDelta(dataLine string) *Delta {
 				PromptTokens:     promptTokens,
 				CompletionTokens: completionTokens,
 				TotalTokens:      totalTokens,
+				CachedTokens:     cachedTokens,
 			}
 		}
 	}
@@ -292,6 +306,7 @@ func extractDelta(dataLine string) *Delta {
 	promptTokens := 0
 	completionTokens := 0
 	totalTokens := 0
+	cachedTokens := 0
 
 	if wrapper.ResponseMeta != nil {
 		if usage, ok := wrapper.ResponseMeta["usage"].(map[string]any); ok {
@@ -303,6 +318,9 @@ func extractDelta(dataLine string) *Delta {
 			}
 			if tt, ok := usage["total_tokens"].(float64); ok {
 				totalTokens = int(tt)
+			}
+			if ct, ok := usage["cached_tokens"].(float64); ok {
+				cachedTokens = int(ct)
 			}
 		}
 	}
@@ -329,6 +347,7 @@ func extractDelta(dataLine string) *Delta {
 				PromptTokens:     promptTokens,
 				CompletionTokens: completionTokens,
 				TotalTokens:      totalTokens,
+				CachedTokens:     cachedTokens,
 			}
 		}
 	}
@@ -336,6 +355,7 @@ func extractDelta(dataLine string) *Delta {
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
 		TotalTokens:      totalTokens,
+		CachedTokens:     cachedTokens,
 	}
 }
 
@@ -375,6 +395,14 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func writeErr(w http.ResponseWriter, err error) {
+	// Check if headers have already been written (avoid "superfluous WriteHeader" error)
+	if wasWritten := w.Header().Get("Content-Type"); wasWritten != "" {
+		// Try writing body without header since status code may already be sent
+		msg := strings.ReplaceAll(err.Error(), `"`, `\"`)
+		body, _ := json.Marshal(map[string]any{"error": map[string]any{"message": msg, "type": "qoder_error"}})
+		_, _ = w.Write(body)
+		return
+	}
 	msg := strings.ReplaceAll(err.Error(), `"`, `\"`)
 	w.Header().Set("Content-Type", "application/json")
 	body, _ := json.Marshal(map[string]any{"error": map[string]any{"message": msg, "type": "qoder_error"}})

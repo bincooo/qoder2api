@@ -11,6 +11,18 @@ import (
 	"time"
 )
 
+// sharedHTTPClient is a global HTTP client for streaming with proper connection pooling.
+// Created once at startup to enable HTTP/2 stream reuse and prevent "stream ID 5" errors
+// after extended runtime.
+var sharedHTTPClient = &http.Client{
+	Timeout: 5 * time.Minute,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
 // PathSig strips a leading "/algo" from the request path, matching Java.
 func PathSig(rawPath string) string {
 	p := rawPath
@@ -62,7 +74,7 @@ func (s *SessionContext) SignedPostStream(ctx context.Context, fullURL string, b
 		req.Header.Set(k, v)
 	}
 
-	client := &http.Client{Timeout: 5 * time.Minute}
+	client := sharedHTTPClient
 	resp, err := client.Do(req)
 	if err != nil {
 		return err

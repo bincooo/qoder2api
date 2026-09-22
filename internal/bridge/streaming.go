@@ -10,6 +10,7 @@ type Delta struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	CachedTokens     int
 }
 
 // isEmpty reports nil or all-three-empty, mirroring Java BridgeDelta.isEmpty.
@@ -22,7 +23,7 @@ func (d *Delta) isEmpty() bool {
 
 // hasTokens reports if token counts have been extracted
 func (d *Delta) hasTokens() bool {
-	return d != nil && (d.PromptTokens > 0 || d.CompletionTokens > 0 || d.TotalTokens > 0)
+	return d != nil && (d.PromptTokens > 0 || d.CompletionTokens > 0 || d.TotalTokens > 0 || d.CachedTokens > 0)
 }
 
 // hasContent reports if the delta has meaningful content to emit
