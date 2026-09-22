@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -68,30 +69,26 @@ func ExchangeJobToken(ctx context.Context, personalToken, machineID, machineToke
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("content-type", "application/json")
-	req.Header.Set("cosy-machinetoken", machineToken)
-	req.Header.Set("cosy-machinetype", machineType)
-	req.Header.Set("login-version", "v2")
-	req.Header.Set("appcode", cosy.APPCODE)
-	req.Header.Set("accept", "application/json")
-	req.Header.Set("accept-encoding", "identity")
-	req.Header.Set("cosy-version", "0.1.43")
-	req.Header.Set("cosy-clienttype", "5")
-	req.Header.Set("date", date)
-	req.Header.Set("signature", sig)
-	req.Header.Set("cosy-machineid", machineID)
-	req.Header.Set("user-agent", "Go-http-client/2.0")
+	cosy.SetJobTokenHeaders(req, machineID, machineToken, machineType, date, sig)
 
 	client := &http.Client{Timeout: 15 * time.Second}
+	log.Printf("[auth] exchanging job token machine_id=%s", machineID)
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Printf("[auth] job token exchange failed: %v", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		log.Printf("[auth] job token exchange HTTP %d body=%s", resp.StatusCode, b)
 		return nil, fmt.Errorf("jobToken HTTP %d body=%s", resp.StatusCode, b)
 	}
+	return decodeJobSession(resp.Body)
+}
+
+// decodeJobSession parses the jobToken response JSON into a JobSession.
+func decodeJobSession(r io.Reader) (*JobSession, error) {
 	var raw struct {
 		Name               string `json:"name"`
 		ID                 string `json:"id"`
@@ -99,7 +96,7 @@ func ExchangeJobToken(ctx context.Context, personalToken, machineID, machineToke
 		SecurityOauthToken string `json:"securityOauthToken"`
 		RefreshToken       string `json:"refreshToken"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+	if err := json.NewDecoder(r).Decode(&raw); err != nil {
 		return nil, err
 	}
 	return &JobSession{

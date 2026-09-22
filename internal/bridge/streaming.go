@@ -73,7 +73,7 @@ func (a *ToolCallAccumulator) Append(deltaCalls []any) {
 	}
 }
 
-func (a *ToolCallAccumulator) IsEmpty() bool  { return len(a.calls) == 0 }
+func (a *ToolCallAccumulator) IsEmpty() bool   { return len(a.calls) == 0 }
 func (a *ToolCallAccumulator) Snapshot() []any { return a.calls }
 
 // intIdx coerces a decoded JSON number to an int (default 0 when absent).
@@ -97,7 +97,7 @@ type StreamAccumulator struct {
 	streamingText           bool
 }
 
-func newStreamAccumulator(toolCallFallbackEnabled bool, emit func(role, content string, tc []any)) *StreamAccumulator {
+func NewStreamAccumulator(toolCallFallbackEnabled bool, emit func(role, content string, tc []any)) *StreamAccumulator {
 	return &StreamAccumulator{emit: emit, toolCallFallbackEnabled: toolCallFallbackEnabled}
 }
 

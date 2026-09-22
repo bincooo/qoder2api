@@ -64,6 +64,8 @@ func NormalizeToolCalls(raw any) []any {
 	return out
 }
 
+// mapAny safely casts to map[string]any, returning an empty map on mismatch
+// so callers can index without nil checks (matching Java's permissive access).
 func mapAny(v any) map[string]any {
 	if m, ok := v.(map[string]any); ok {
 		return m

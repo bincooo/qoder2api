@@ -27,7 +27,7 @@ func TestToolCallAccumulator_ConcatenatesArguments(t *testing.T) {
 // ---- StreamAccumulator ----
 func TestStreamAccumulator_BuffersToolCallPreamble(t *testing.T) {
 	var raw string
-	sa := newStreamAccumulator(true, func(role, content string, tc []any) {
+	sa := NewStreamAccumulator(true, func(role, content string, tc []any) {
 		raw += content
 	})
 	sa.Accept(Delta{Content: "Tool "})
@@ -41,7 +41,7 @@ func TestStreamAccumulator_BuffersToolCallPreamble(t *testing.T) {
 func TestStreamAccumulator_ReparsesToolCall(t *testing.T) {
 	var raw string
 	accused := false
-	sa := newStreamAccumulator(true, func(role, content string, tc []any) {
+	sa := NewStreamAccumulator(true, func(role, content string, tc []any) {
 		if tc != nil {
 			accused = true
 		}
@@ -55,7 +55,7 @@ func TestStreamAccumulator_ReparsesToolCall(t *testing.T) {
 }
 
 func TestStreamAccumulator_FinishReason(t *testing.T) {
-	sa := newStreamAccumulator(true, func(role, content string, tc []any) {})
+	sa := NewStreamAccumulator(true, func(role, content string, tc []any) {})
 	if sa.FinishReason() != "stop" {
 		t.Fatal("empty acc should finish stop")
 	}

@@ -5,7 +5,9 @@ import (
 	"strings"
 )
 
-func blankResponseMeta() map[string]any {
+// defaultUsageStats mirrors Java's blank response_meta: zeroed usage counts
+// with the reasoning/cached detail buckets the upstream template expects.
+func defaultUsageStats() map[string]any {
 	return map[string]any{
 		"id": "",
 		"usage": map[string]any{
@@ -21,7 +23,7 @@ func buildUserMessage(text string) map[string]any {
 		"role":                        "user",
 		"content":                     "",
 		"contents":                    []any{map[string]any{"type": "text", "text": text}},
-		"response_meta":               blankResponseMeta(),
+		"response_meta":               defaultUsageStats(),
 		"reasoning_content_signature": "",
 	}
 }
@@ -30,7 +32,7 @@ func buildStructuredMessage(role, text string) map[string]any {
 	return map[string]any{
 		"role":                        role,
 		"content":                     text,
-		"response_meta":               blankResponseMeta(),
+		"response_meta":               defaultUsageStats(),
 		"reasoning_content_signature": "",
 	}
 }
