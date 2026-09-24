@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
+
+	"qoder2api/internal/cosy"
 )
 
 // streamResult carries the state gathered while consuming an upstream SSE stream.
@@ -28,13 +30,14 @@ func dataLineFromSse(line string) string {
 func (b *Bridge) handleStreamResponse(
 	w http.ResponseWriter,
 	ctx context.Context,
+	sess *cosy.SessionContext,
 	bodyEncoded []byte,
 	extra map[string]string,
 	reqID string,
 	created int64,
 	model string,
 	toolsEnabled bool,
-) {
+) error {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
@@ -48,7 +51,7 @@ func (b *Bridge) handleStreamResponse(
 		}
 	})
 
-	err := b.sess.SignedPostStream(ctx, chatURL, bodyEncoded, extra, func(line string) {
+	err := sess.SignedPostStream(ctx, chatURL, bodyEncoded, extra, func(line string) {
 		payload := dataLineFromSse(line)
 		if payload == "" {
 			return
@@ -66,11 +69,12 @@ func (b *Bridge) handleStreamResponse(
 	if err != nil {
 		log.Printf("[chat] id=%s upstream stream error: %v", reqID, err)
 		writeErr(w, err)
-		return
+		return err
 	}
 	acc.Flush()
 	writeTerminalChunk(w, reqID, created, model, acc.FinishReason(), usageFromDelta(res.lastDelta))
 	log.Printf("[chat] id=%s stream finished reason=%s", reqID, acc.FinishReason())
+	return nil
 }
 
 // usageFromDelta returns the OpenAI-style usage map for a delta, or the zeroed

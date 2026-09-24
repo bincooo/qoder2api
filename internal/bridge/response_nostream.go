@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
+
+	"qoder2api/internal/cosy"
 )
 
 // nonStreamResult carries the state gathered while consuming the upstream
@@ -21,15 +23,16 @@ type nonStreamResult struct {
 func (b *Bridge) handleNonStreamingResponse(
 	w http.ResponseWriter,
 	ctx context.Context,
+	sess *cosy.SessionContext,
 	bodyEncoded []byte,
 	extra map[string]string,
 	reqID string,
 	created int64,
 	model string,
 	toolsEnabled bool,
-) {
+) error {
 	res := &nonStreamResult{}
-	err := b.sess.SignedPostStream(ctx, chatURL, bodyEncoded, extra, func(line string) {
+	err := sess.SignedPostStream(ctx, chatURL, bodyEncoded, extra, func(line string) {
 		payload := dataLineFromSse(line)
 		if payload == "" {
 			return
@@ -49,7 +52,7 @@ func (b *Bridge) handleNonStreamingResponse(
 	if err != nil {
 		log.Printf("[chat] id=%s upstream stream error: %v", reqID, err)
 		writeErr(w, err)
-		return
+		return err
 	}
 
 	finishReason := res.finishReason(toolsEnabled)
@@ -68,6 +71,7 @@ func (b *Bridge) handleNonStreamingResponse(
 	writeJSON(w, resp)
 	log.Printf("[chat] id=%s non-stream finished reason=%s content_len=%d tool_calls=%d",
 		reqID, finishReason, res.full.Len(), len(res.acc.Snapshot()))
+	return nil
 }
 
 // assistantMessage folds accumulated text and tool calls into the OpenAI

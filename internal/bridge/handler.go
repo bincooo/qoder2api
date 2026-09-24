@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -9,17 +10,18 @@ import (
 	"time"
 
 	"qoder2api/internal/cosy"
+	"qoder2api/internal/patpool"
 )
 
 const chatURL = "https://api3.qoder.sh/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1"
 
 type Bridge struct {
-	sess     *cosy.SessionContext
+	pool     *patpool.Pool
 	template []byte
 }
 
-func NewBridge(sess *cosy.SessionContext, template []byte) *Bridge {
-	return &Bridge{sess: sess, template: template}
+func NewBridge(pool *patpool.Pool, template []byte) *Bridge {
+	return &Bridge{pool: pool, template: template}
 }
 
 // Handler serves the /v1/chat/completions endpoint, mirroring Java handleChat.
@@ -37,7 +39,20 @@ func (b *Bridge) Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	plan, err := b.planUpstreamRequest(req)
+	// 从会话池取一个会话（round-robin）。
+	patID, sess, ok := b.pool.Next()
+	if !ok {
+		log.Printf("[chat] no enabled PAT session available")
+		writeErrJSON(w, http.StatusBadRequest, "no enabled PAT, import first via /v1/pat/import")
+		return
+	}
+	defer func() {
+		if err := b.pool.RecordCall(patID); err != nil {
+			log.Printf("[pool] record call for pat id=%d failed: %v", patID, err)
+		}
+	}()
+
+	plan, err := b.planUpstreamRequest(req, sess)
 	if err != nil {
 		log.Printf("[chat] upstream plan failed: %v", err)
 		writeErr(w, err)
@@ -46,16 +61,40 @@ func (b *Bridge) Handler(w http.ResponseWriter, r *http.Request) {
 
 	reqID := "chatcmpl-" + strings.ReplaceAll(cosy.NewUUID(), "-", "")[:24]
 	created := time.Now().Unix()
-	log.Printf("[chat] %s id=%s model=%s stream=%v tools=%v messages=%d prompt_len=%d",
-		r.RemoteAddr, reqID, plan.model, plan.toolsEnabled, len(req.Tools), len(req.Messages), len([]rune(plan.prompt)))
+	log.Printf("[chat] %s id=%s model=%s stream=%v tools=%v messages=%d pat_id=%d",
+		r.RemoteAddr, reqID, plan.model, plan.toolsEnabled, len(req.Tools), len(req.Messages), patID)
 
 	if req.Stream {
-		b.handleStreamResponse(w, r.Context(), plan.bodyEncoded, plan.extraHeaders, reqID, created, plan.model, plan.toolsEnabled)
+		err := b.handleStreamResponse(w, r.Context(), sess, plan.bodyEncoded, plan.extraHeaders, reqID, created, plan.model, plan.toolsEnabled)
+		if isAuthError(err) {
+			b.pool.MarkDead(patID)
+		}
 		log.Printf("[chat] id=%s stream done in %s", reqID, time.Since(start))
 		return
 	}
-	b.handleNonStreamingResponse(w, r.Context(), plan.bodyEncoded, plan.extraHeaders, reqID, created, plan.model, plan.toolsEnabled)
+	err = b.handleNonStreamingResponse(w, r.Context(), sess, plan.bodyEncoded, plan.extraHeaders, reqID, created, plan.model, plan.toolsEnabled)
+	if isAuthError(err) {
+		b.pool.MarkDead(patID)
+	}
 	log.Printf("[chat] id=%s non-stream done in %s", reqID, time.Since(start))
+}
+
+// isAuthError reports whether err is an upstream auth failure (401/403), which
+// means the PAT behind the session is dead and should be disabled.
+func isAuthError(err error) bool {
+	var ue *cosy.UpstreamError
+	if errors.As(err, &ue) {
+		return ue.Status == http.StatusUnauthorized || ue.Status == http.StatusForbidden
+	}
+	return false
+}
+
+// writeErrJSON returns a qoder_error JSON body with the given status.
+func writeErrJSON(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	body, _ := json.Marshal(map[string]any{"error": map[string]any{"message": msg, "type": "qoder_error"}})
+	_, _ = w.Write(body)
 }
 
 // upstreamPlan is everything derived from the incoming request needed to call
@@ -72,7 +111,7 @@ type upstreamPlan struct {
 // and the converted messages, and encodes the body for the upstream call.
 // model is the display name echoed back to the OpenAI client; the upstream key
 // is resolved separately and only fed to the Qoder model_config.
-func (b *Bridge) planUpstreamRequest(req ChatRequest) (*upstreamPlan, error) {
+func (b *Bridge) planUpstreamRequest(req ChatRequest, sess *cosy.SessionContext) (*upstreamPlan, error) {
 	model := req.Model
 	if model == "" {
 		model = "lite"
@@ -90,7 +129,7 @@ func (b *Bridge) planUpstreamRequest(req ChatRequest) (*upstreamPlan, error) {
 		return nil, err
 	}
 
-	injectRequestIDs(body, b.sess.Identity.UserType)
+	injectRequestIDs(body, sess.Identity.UserType)
 	modelConfig := setModelConfig(body, upstreamKey)
 	prompt := setPromptAndBusiness(body, req.Messages)
 	body["messages"] = BuildQoderMessages(body["messages"].([]any), req.Messages, prompt, toolsEnabled)

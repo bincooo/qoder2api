@@ -15,10 +15,7 @@ func TestFillTemplate(t *testing.T) {
 }
 
 func TestEmbeddedTemplate(t *testing.T) {
-	b, err := LoadEmbeddedTemplate()
-	if err != nil {
-		t.Fatal(err)
-	}
+	b := LoadEmbeddedTemplate()
 	if len(b) == 0 {
 		t.Fatal("embedded template empty")
 	}

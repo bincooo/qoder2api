@@ -10,8 +10,8 @@ import (
 var embeddedTemplate []byte
 
 // LoadEmbeddedTemplate returns the verbatim baseprompt.json bytes.
-func LoadEmbeddedTemplate() ([]byte, error) {
-	return embeddedTemplate, nil
+func LoadEmbeddedTemplate() []byte {
+	return embeddedTemplate
 }
 
 // FillTemplate substitutes {UUID1}..{UUID5} (in order) and {TIME1} (milliseconds)

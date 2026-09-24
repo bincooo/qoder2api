@@ -1,2 +1,9 @@
 /bin/
 /target/
+/auths/
+
+# SQLite 数据库（PAT 等敏感数据，不入库）
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
